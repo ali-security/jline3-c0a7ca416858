@@ -19,4 +19,13 @@ jdk:
 # FIXME: for now just complain; do not fail as the present license headers have inconsistent date ranges
 install: ./build ci-prepare -Dlicense.failIfMissing=false $MAVEN_OPTIONS
 
-script: ./build ci-build $MAVEN_OPTIONS
+# seal: `./build rebuild` (= `mvn clean install`, the goal ci-build uses for pull requests) instead of
+# `ci-build`, whose push-build goal `deploy` needs Sonatype credentials the fork cannot decrypt
+script: ./build rebuild $MAVEN_OPTIONS
+
+# seal: name every skipped test and its reason (surefire prints only a skip count)
+after_script:
+  - echo "=== Skipped tests (from */target/surefire-reports) ==="
+  - grep -r -B1 --include='TEST-*.xml' "<skipped" .
+  - echo "=== Reason (upstream @Ignore annotations / assumptions in src/test) ==="
+  - grep -rn -A2 --include='*Test.java' -E "@Ignore|assume(True|False)" .

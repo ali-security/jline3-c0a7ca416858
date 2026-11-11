@@ -18,16 +18,17 @@
 name: build
 
 on:
-  push:
-    branches:
-      - master
-  pull_request:
-    branches:
-      - master
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: 'Optional surefire -Dtest selector; empty runs the full suite'
+        required: false
+        default: ''
 
 jobs:
   compile:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       matrix:
         os: [ ubuntu-latest, windows-latest ]
@@ -40,7 +41,7 @@ jobs:
         with:
           java-version: ${{ matrix.java }}
 
-      - uses: actions/cache@v1
+      - uses: actions/cache@v4
         with:
           path: ~/.m2/repository
           key: ${{ matrix.os }}-maven-${{ hashFiles('**/pom.xml') }}
@@ -53,6 +54,7 @@ jobs:
   test:
     needs: compile
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       matrix:
         os: [ ubuntu-latest, windows-latest ]
@@ -65,7 +67,7 @@ jobs:
         with:
           java-version: ${{ matrix.java }}
 
-      - uses: actions/cache@v1
+      - uses: actions/cache@v4
         with:
           path: ~/.m2/repository
           key: ${{ matrix.os }}-maven-${{ hashFiles('**/pom.xml') }}
@@ -73,4 +75,27 @@ jobs:
             ${{ matrix.os }}-maven-
 
       - name: Build with maven
-        run: mvn --activate-profiles ci --no-transfer-progress package
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.test-filter }}" ]; then
+            mvn --activate-profiles ci --no-transfer-progress package -Dtest="${{ inputs.test-filter }}" -DfailIfNoTests=false -Dsurefire.failIfNoSpecifiedTests=false
+          else
+            mvn --activate-profiles ci --no-transfer-progress package
+          fi
+
+      - name: List skipped tests and their reasons
+        if: always()
+        shell: bash
+        run: |
+          echo "=== Skipped tests (from */target/surefire-reports) ==="
+          if ! grep -r -B1 --include='TEST-*.xml' "<skipped" . ; then echo "no skipped entries"; fi
+          echo "=== Reason (upstream @Ignore annotations / assumptions in src/test) ==="
+          grep -rn -A2 --include='*Test.java' -E "@Ignore|assume(True|False)" .
+
+      - name: Upload jline-builtins jar
+        if: matrix.os == 'ubuntu-latest' && matrix.java == '11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: jline-builtins
+          path: builtins/target/jline-builtins-3.21.0.jar
+          if-no-files-found: error
