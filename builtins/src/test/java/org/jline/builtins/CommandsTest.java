@@ -15,15 +15,106 @@ import org.jline.reader.impl.history.DefaultHistory;
 import org.jline.terminal.Size;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
+import org.jline.terminal.impl.LineDisciplineTerminal;
+import org.jline.utils.AttributedString;
 import org.junit.Test;
 
 import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 public class CommandsTest {
+
+    private static String repeat(char c, int count) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < count; i++) {
+            sb.append(c);
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Runs {@code history -n -m <match>} over the given history lines and
+     * returns the listed entries.
+     */
+    private static List<String> historyMatch(String match, String... lines) throws Exception {
+        LineDisciplineTerminal terminal = new LineDisciplineTerminal(
+                "history", "xterm", new ByteArrayOutputStream(), StandardCharsets.UTF_8);
+        terminal.setSize(new Size(200, 30));
+        History history = new DefaultHistory();
+        LineReader reader = LineReaderBuilder.builder()
+                .terminal(terminal)
+                .history(history)
+                .build();
+        history.attach(reader);
+        for (String line : lines) {
+            history.add(line);
+        }
+        ByteArrayOutputStream os = new ByteArrayOutputStream();
+        PrintStream out = new PrintStream(os, true, "UTF-8");
+        Commands.history(reader, out, out, Paths.get(""), new String[] {"-n", "-m", match});
+        out.flush();
+        List<String> listed = new ArrayList<>();
+        for (String l : os.toString("UTF-8").split("\\r?\\n")) {
+            String s = AttributedString.stripAnsi(l).trim();
+            if (!s.isEmpty()) {
+                listed.add(s);
+            }
+        }
+        return listed;
+    }
+
+    @Test(timeout = 10000)
+    public void testHistoryMatchGlob() throws Exception {
+        String[] lines = {"foo bar", "foobaz", "bar foo", "f.o", "fxo", "a*b", "axb"};
+        // '*' matches any string
+        assertEquals(Arrays.asList("foo bar", "foobaz"), historyMatch("foo*", lines));
+        assertEquals(Arrays.asList("foo bar", "foobaz", "bar foo"), historyMatch("*foo*", lines));
+        // Every other character matches literally
+        assertEquals(Arrays.asList("f.o"), historyMatch("f.o", lines));
+        // '\' escapes the next character
+        assertEquals(Arrays.asList("a*b"), historyMatch("a\\*b", lines));
+    }
+
+    @Test(timeout = 20000)
+    public void testHistoryMatchNestedQuantifierReDoS() throws Exception {
+        // The match used to be compiled as a regular expression, so nested
+        // quantifiers backtracked catastrophically on "aaaa...!"
+        String evil = repeat('a', 50) + "!";
+        String match = SafeRegexTest.EVIL_PATTERN;
+        long start = System.nanoTime();
+        List<String> listed = historyMatch(match,
+                "first", evil + "1", evil + "2", evil + "3", match, evil + "4", "last");
+        long elapsedMs = (System.nanoTime() - start) / 1000000;
+        // The match is a glob: the regex metacharacters are taken literally
+        assertEquals(Arrays.asList(match), listed);
+        assertTrue("history -m took " + elapsedMs + " ms", elapsedMs < 15000);
+    }
+
+    @Test(timeout = 20000)
+    public void testHistoryMatchStarBacktrackingReDoS() throws Exception {
+        // Each '*' becomes ".*": many of them backtrack polynomially on a
+        // long non-matching entry, which the matching timeout must bound
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < 12; i++) {
+            sb.append("*a");
+        }
+        String glob = sb.append("*b").toString();
+        long start = System.nanoTime();
+        List<String> listed = historyMatch(glob,
+                "first", repeat('a', 100), repeat('a', 101), repeat('a', 12) + "b", "last");
+        long elapsedMs = (System.nanoTime() - start) / 1000000;
+        assertEquals(Arrays.asList(repeat('a', 12) + "b"), listed);
+        assertTrue("history -m took " + elapsedMs + " ms", elapsedMs < 15000);
+    }
+
     @Test
     public void testHistoryForFileWithMoreHistoryRecordsThanAtHistoryFileSize() {
         try {
